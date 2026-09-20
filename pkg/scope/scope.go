@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sync"
 )
@@ -52,48 +53,64 @@ func (s *Scope) Match(req *http.Request, body []byte) bool {
 }
 
 func (r Rule) Match(req *http.Request, body []byte) bool {
-	if r.URL != nil {
-		if matches := r.URL.MatchString(req.URL.String()); matches {
-			return true
-		}
+	return r.MatchesURL(req.URL) || r.MatchesHeader(req.Header) || r.MatchesBody(body)
+}
+
+// MatchesURL reports whether the rule's URL criterion matches the given URL.
+func (r Rule) MatchesURL(u *url.URL) bool {
+	if r.URL == nil || u == nil {
+		return false
 	}
 
-	for key, values := range req.Header {
-		var keyMatches, valueMatches bool
+	return r.URL.MatchString(u.String())
+}
 
-		if r.Header.Key != nil {
-			if matches := r.Header.Key.MatchString(key); matches {
-				keyMatches = true
-			}
-		}
-
-		if r.Header.Value != nil {
-			for _, value := range values {
-				if matches := r.Header.Value.MatchString(value); matches {
-					valueMatches = true
-					break
-				}
-			}
-		}
-		// When only key or value is set, match on whatever is set.
-		// When both are set, both must match.
-		switch {
-		case r.Header.Key != nil && r.Header.Value == nil && keyMatches:
-			return true
-		case r.Header.Key == nil && r.Header.Value != nil && valueMatches:
-			return true
-		case r.Header.Key != nil && r.Header.Value != nil && keyMatches && valueMatches:
-			return true
-		}
+// MatchesHeader reports whether the rule's header criterion matches the given
+// HTTP headers. Both a key and a value pattern must be configured for the
+// header criterion to be effective, and both must match the *same* header.
+// A partially configured header criterion (only a key or only a value
+// pattern) never matches; this prevents overly broad rules that would match
+// any request carrying a common header.
+func (r Rule) MatchesHeader(header http.Header) bool {
+	if r.Header.Key == nil || r.Header.Value == nil {
+		return false
 	}
 
-	if r.Body != nil {
-		if matches := r.Body.Match(body); matches {
-			return true
+	for key, values := range header {
+		if !r.Header.Key.MatchString(key) {
+			continue
+		}
+
+		for _, value := range values {
+			if r.Header.Value.MatchString(value) {
+				return true
+			}
 		}
 	}
 
 	return false
+}
+
+// MatchesBody reports whether the rule's body criterion matches the given
+// body. To avoid scanning large bodies with the regexp engine, a cheap
+// literal-prefix prefilter is used to reject bodies that cannot match.
+func (r Rule) MatchesBody(body []byte) bool {
+	if r.Body == nil || len(body) == 0 {
+		return false
+	}
+
+	prefix, complete := r.Body.LiteralPrefix()
+	if complete {
+		// The regexp is a literal string; matching boils down to a
+		// substring search.
+		return bytes.Contains(body, []byte(prefix))
+	}
+
+	if prefix != "" && !bytes.Contains(body, []byte(prefix)) {
+		return false
+	}
+
+	return r.Body.Match(body)
 }
 
 func regexpToString(r *regexp.Regexp) string {
@@ -110,6 +127,19 @@ func stringToRegexp(s string) (*regexp.Regexp, error) {
 	}
 
 	return regexp.Compile(s)
+}
+
+// compileRegexpLenient compiles the given pattern, returning nil if the
+// pattern is empty or invalid. It is used when loading persisted rules, so
+// that a single invalid pattern doesn't prevent the whole rule (and thus the
+// project) from being loaded.
+func compileRegexpLenient(s string) *regexp.Regexp {
+	re, err := stringToRegexp(s)
+	if err != nil {
+		return nil
+	}
+
+	return re
 }
 
 type ruleDTO struct {
@@ -147,33 +177,16 @@ func (r *Rule) UnmarshalBinary(data []byte) error {
 		return err
 	}
 
-	url, err := stringToRegexp(dto.URL)
-	if err != nil {
-		return err
-	}
-
-	headerKey, err := stringToRegexp(dto.Header.Key)
-	if err != nil {
-		return err
-	}
-
-	headerValue, err := stringToRegexp(dto.Header.Value)
-	if err != nil {
-		return err
-	}
-
-	body, err := stringToRegexp(dto.Body)
-	if err != nil {
-		return err
-	}
-
+	// Compile patterns leniently: if a stored pattern fails to compile
+	// (e.g. data written by an incompatible version), degrade by dropping
+	// that criterion instead of failing to load the entire rule set.
 	*r = Rule{
-		URL: url,
+		URL: compileRegexpLenient(dto.URL),
 		Header: Header{
-			Key:   headerKey,
-			Value: headerValue,
+			Key:   compileRegexpLenient(dto.Header.Key),
+			Value: compileRegexpLenient(dto.Header.Value),
 		},
-		Body: body,
+		Body: compileRegexpLenient(dto.Body),
 	}
 
 	return nil

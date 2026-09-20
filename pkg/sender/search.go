@@ -221,45 +221,8 @@ func (req Request) matchStringLiteral(strLiteral filter.StringLiteral) (bool, er
 
 func (req Request) MatchScope(s *scope.Scope) bool {
 	for _, rule := range s.Rules() {
-		if rule.URL != nil && req.URL != nil {
-			if matches := rule.URL.MatchString(req.URL.String()); matches {
-				return true
-			}
-		}
-
-		for key, values := range req.Header {
-			var keyMatches, valueMatches bool
-
-			if rule.Header.Key != nil {
-				if matches := rule.Header.Key.MatchString(key); matches {
-					keyMatches = true
-				}
-			}
-
-			if rule.Header.Value != nil {
-				for _, value := range values {
-					if matches := rule.Header.Value.MatchString(value); matches {
-						valueMatches = true
-						break
-					}
-				}
-			}
-			// When only key or value is set, match on whatever is set.
-			// When both are set, both must match.
-			switch {
-			case rule.Header.Key != nil && rule.Header.Value == nil && keyMatches:
-				return true
-			case rule.Header.Key == nil && rule.Header.Value != nil && valueMatches:
-				return true
-			case rule.Header.Key != nil && rule.Header.Value != nil && keyMatches && valueMatches:
-				return true
-			}
-		}
-
-		if rule.Body != nil {
-			if matches := rule.Body.Match(req.Body); matches {
-				return true
-			}
+		if rule.MatchesURL(req.URL) || rule.MatchesHeader(req.Header) || rule.MatchesBody(req.Body) {
+			return true
 		}
 	}
 

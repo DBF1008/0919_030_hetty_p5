@@ -228,45 +228,8 @@ func (reqLog RequestLog) matchStringLiteral(strLiteral filter.StringLiteral) (bo
 
 func (reqLog RequestLog) MatchScope(s *scope.Scope) bool {
 	for _, rule := range s.Rules() {
-		if rule.URL != nil && reqLog.URL != nil {
-			if matches := rule.URL.MatchString(reqLog.URL.String()); matches {
-				return true
-			}
-		}
-
-		for key, values := range reqLog.Header {
-			var keyMatches, valueMatches bool
-
-			if rule.Header.Key != nil {
-				if matches := rule.Header.Key.MatchString(key); matches {
-					keyMatches = true
-				}
-			}
-
-			if rule.Header.Value != nil {
-				for _, value := range values {
-					if matches := rule.Header.Value.MatchString(value); matches {
-						valueMatches = true
-						break
-					}
-				}
-			}
-			// When only key or value is set, match on whatever is set.
-			// When both are set, both must match.
-			switch {
-			case rule.Header.Key != nil && rule.Header.Value == nil && keyMatches:
-				return true
-			case rule.Header.Key == nil && rule.Header.Value != nil && valueMatches:
-				return true
-			case rule.Header.Key != nil && rule.Header.Value != nil && keyMatches && valueMatches:
-				return true
-			}
-		}
-
-		if rule.Body != nil {
-			if matches := rule.Body.Match(reqLog.Body); matches {
-				return true
-			}
+		if rule.MatchesURL(reqLog.URL) || rule.MatchesHeader(reqLog.Header) || rule.MatchesBody(reqLog.Body) {
+			return true
 		}
 	}
 
