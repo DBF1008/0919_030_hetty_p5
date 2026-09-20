@@ -58,42 +58,47 @@ func (r Rule) Match(req *http.Request, body []byte) bool {
 		}
 	}
 
-	for key, values := range req.Header {
-		var keyMatches, valueMatches bool
-
-		if r.Header.Key != nil {
-			if matches := r.Header.Key.MatchString(key); matches {
-				keyMatches = true
+	// A header rule is only evaluated when both key and value patterns are
+	// set; a partially configured header rule would match too broadly. Both
+	// patterns must match the same header.
+	if r.Header.Key != nil && r.Header.Value != nil {
+		for key, values := range req.Header {
+			if matches := r.Header.Key.MatchString(key); !matches {
+				continue
 			}
-		}
 
-		if r.Header.Value != nil {
 			for _, value := range values {
 				if matches := r.Header.Value.MatchString(value); matches {
-					valueMatches = true
-					break
+					return true
 				}
 			}
-		}
-		// When only key or value is set, match on whatever is set.
-		// When both are set, both must match.
-		switch {
-		case r.Header.Key != nil && r.Header.Value == nil && keyMatches:
-			return true
-		case r.Header.Key == nil && r.Header.Value != nil && valueMatches:
-			return true
-		case r.Header.Key != nil && r.Header.Value != nil && keyMatches && valueMatches:
-			return true
 		}
 	}
 
 	if r.Body != nil {
-		if matches := r.Body.Match(body); matches {
+		if matches := matchBytes(r.Body, body); matches {
 			return true
 		}
 	}
 
 	return false
+}
+
+// matchBytes reports whether re matches b. It uses the regexp's literal
+// prefix (when available) to cheaply reject non-matching input with a
+// substring search before running a full regex scan, which avoids scanning
+// large bodies with the regex engine when no match is possible.
+func matchBytes(re *regexp.Regexp, b []byte) bool {
+	prefix, complete := re.LiteralPrefix()
+	if complete {
+		return bytes.Contains(b, []byte(prefix))
+	}
+
+	if prefix != "" && !bytes.Contains(b, []byte(prefix)) {
+		return false
+	}
+
+	return re.Match(b)
 }
 
 func regexpToString(r *regexp.Regexp) string {
@@ -147,25 +152,12 @@ func (r *Rule) UnmarshalBinary(data []byte) error {
 		return err
 	}
 
-	url, err := stringToRegexp(dto.URL)
-	if err != nil {
-		return err
-	}
-
-	headerKey, err := stringToRegexp(dto.Header.Key)
-	if err != nil {
-		return err
-	}
-
-	headerValue, err := stringToRegexp(dto.Header.Value)
-	if err != nil {
-		return err
-	}
-
-	body, err := stringToRegexp(dto.Body)
-	if err != nil {
-		return err
-	}
+	// Compile patterns leniently: an invalid pattern degrades to nil (the
+	// criterion is disabled) instead of failing to load the whole rule.
+	url, _ := stringToRegexp(dto.URL)
+	headerKey, _ := stringToRegexp(dto.Header.Key)
+	headerValue, _ := stringToRegexp(dto.Header.Value)
+	body, _ := stringToRegexp(dto.Body)
 
 	*r = Rule{
 		URL: url,

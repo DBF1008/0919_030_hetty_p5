@@ -224,58 +224,30 @@ func matchReqStringLiteral(req *http.Request, strLiteral filter.StringLiteral) (
 }
 
 func MatchRequestScope(req *http.Request, s *scope.Scope) (bool, error) {
+	// Read the request body at most once, and only when a rule needs it.
+	var body []byte
+
+	needsBody := false
+
 	for _, rule := range s.Rules() {
-		if rule.URL != nil && req.URL != nil {
-			if matches := rule.URL.MatchString(req.URL.String()); matches {
-				return true, nil
-			}
-		}
-
-		for key, values := range req.Header {
-			var keyMatches, valueMatches bool
-
-			if rule.Header.Key != nil {
-				if matches := rule.Header.Key.MatchString(key); matches {
-					keyMatches = true
-				}
-			}
-
-			if rule.Header.Value != nil {
-				for _, value := range values {
-					if matches := rule.Header.Value.MatchString(value); matches {
-						valueMatches = true
-						break
-					}
-				}
-			}
-
-			// When only key or value is set, match on whatever is set.
-			// When both are set, both must match.
-			switch {
-			case rule.Header.Key != nil && rule.Header.Value == nil && keyMatches:
-				return true, nil
-			case rule.Header.Key == nil && rule.Header.Value != nil && valueMatches:
-				return true, nil
-			case rule.Header.Key != nil && rule.Header.Value != nil && keyMatches && valueMatches:
-				return true, nil
-			}
-		}
-
 		if rule.Body != nil {
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				return false, fmt.Errorf("failed to read request body: %w", err)
-			}
-
-			req.Body = ioutil.NopCloser(bytes.NewBuffer(body))
-
-			if matches := rule.Body.Match(body); matches {
-				return true, nil
-			}
+			needsBody = true
+			break
 		}
 	}
 
-	return false, nil
+	if needsBody && req.Body != nil {
+		var err error
+
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return false, fmt.Errorf("failed to read request body: %w", err)
+		}
+
+		req.Body = ioutil.NopCloser(bytes.NewBuffer(body))
+	}
+
+	return s.Match(req, body), nil
 }
 
 // MatchResponseFilter returns true if an HTTP response matches the response filter expression.
